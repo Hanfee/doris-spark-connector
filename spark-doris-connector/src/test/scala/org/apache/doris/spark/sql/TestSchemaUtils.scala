@@ -22,18 +22,17 @@ import org.apache.doris.spark.rest.models.{Field, Schema}
 import org.apache.doris.thrift.{TPrimitiveType, TScanColumnDesc}
 import org.apache.spark.sql.types._
 import org.hamcrest.core.StringStartsWith.startsWith
-import org.junit.{Assert, Ignore, Test}
+import org.junit.{Assert, Test}
 
 import scala.collection.JavaConverters._
 
-@Ignore
 class TestSchemaUtils extends ExpectedExceptionTest {
   @Test
   def testConvertToStruct(): Unit = {
     val schema = new Schema
     schema.setStatus(200)
-    val k1 = new Field("k1", "TINYINT", "", 0, 0, "")
-    val k5 = new Field("k5", "BIGINT", "", 0, 0, "")
+    val k1 = new Field("k1", "TINYINT", "", 0, 0)
+    val k5 = new Field("k5", "BIGINT", "", 0, 0)
     schema.put(k1)
     schema.put(k5)
 
@@ -41,7 +40,7 @@ class TestSchemaUtils extends ExpectedExceptionTest {
     fields :+= DataTypes.createStructField("k1", DataTypes.ByteType, true)
     fields :+= DataTypes.createStructField("k5", DataTypes.LongType, true)
     val expected = DataTypes.createStructType(fields.asJava)
-    Assert.assertEquals(expected, SchemaUtils.convertToStruct("k1,k5", schema))
+    Assert.assertEquals(expected, SchemaUtils.convertToStruct(schema))
   }
 
   @Test
@@ -63,7 +62,6 @@ class TestSchemaUtils extends ExpectedExceptionTest {
     Assert.assertEquals(DataTypes.StringType, SchemaUtils.getCatalystType("VARCHAR", 0, 0))
     Assert.assertEquals(DecimalType(10, 5), SchemaUtils.getCatalystType("DECIMALV2", 10, 5))
     Assert.assertEquals(DataTypes.DoubleType, SchemaUtils.getCatalystType("TIME", 0, 0))
-    Assert.assertEquals(DataTypes.StringType, SchemaUtils.getCatalystType("STRING", 0, 0))
 
     thrown.expect(classOf[DorisException])
     thrown.expectMessage(startsWith("Unsupported type"))
@@ -86,8 +84,8 @@ class TestSchemaUtils extends ExpectedExceptionTest {
 
     val expected = new Schema
     expected.setStatus(0)
-    val ek1 = new Field("k1", "BOOLEAN", "", 0, 0, "")
-    val ek2 = new Field("k2", "DOUBLE", "", 0, 0, "")
+    val ek1 = new Field("k1", "BOOLEAN", "", 0, 0)
+    val ek2 = new Field("k2", "DOUBLE", "", 0, 0)
     expected.put(ek1)
     expected.put(ek2)
 

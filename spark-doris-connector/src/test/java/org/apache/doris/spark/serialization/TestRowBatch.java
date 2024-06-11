@@ -60,7 +60,7 @@ import org.slf4j.LoggerFactory;
 import com.google.common.collect.ImmutableList;
 
 public class TestRowBatch {
-    private final static Logger logger = LoggerFactory.getLogger(TestRowBatch.class);
+    private static Logger logger = LoggerFactory.getLogger(TestRowBatch.class);
 
     @Rule
     public ExpectedException thrown = ExpectedException.none();
@@ -235,7 +235,7 @@ public class TestRowBatch {
                 + "{\"type\":\"DOUBLE\",\"name\":\"k8\",\"comment\":\"\"},{\"type\":\"DATE\",\"name\":\"k10\","
                 + "\"comment\":\"\"},{\"type\":\"DATETIME\",\"name\":\"k11\",\"comment\":\"\"},"
                 + "{\"name\":\"k5\",\"scale\":\"0\",\"comment\":\"\","
-                + "\"type\":\"DECIMAL\",\"precision\":\"9\",\"aggregation_type\":\"\"},{\"type\":\"CHAR\",\"name\":\"k6\",\"comment\":\"\",\"aggregation_type\":\"REPLACE_IF_NOT_NULL\"}],"
+                + "\"type\":\"DECIMAL\",\"precision\":\"9\"},{\"type\":\"CHAR\",\"name\":\"k6\",\"comment\":\"\"}],"
                 + "\"status\":200}";
 
         Schema schema = RestService.parseSchema(schemaStr, logger);

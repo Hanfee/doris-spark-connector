@@ -23,7 +23,11 @@ import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_TABLET_SIZE_
 import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_TABLET_SIZE_MIN;
 import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_TABLE_IDENTIFIER;
 import static org.hamcrest.core.StringStartsWith.startsWith;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH_DEFAULT;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_CURSOR_OFFSET;
 
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH_FLAG;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -37,14 +41,11 @@ import org.apache.doris.spark.cfg.PropertiesSettings;
 import org.apache.doris.spark.cfg.Settings;
 import org.apache.doris.spark.exception.DorisException;
 import org.apache.doris.spark.exception.IllegalArgumentException;
-import org.apache.doris.spark.rest.models.BackendRow;
-import org.apache.doris.spark.rest.models.BackendV2;
 import org.apache.doris.spark.rest.models.Field;
 import org.apache.doris.spark.rest.models.QueryPlan;
 import org.apache.doris.spark.rest.models.Schema;
 import org.apache.doris.spark.rest.models.Tablet;
 import org.junit.Assert;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -52,7 +53,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TestRestService {
-    private final static Logger logger = LoggerFactory.getLogger(TestRestService.class);
+    private static Logger logger = LoggerFactory.getLogger(TestRestService.class);
 
     @Rule
     public ExpectedException thrown = ExpectedException.none();
@@ -119,12 +120,12 @@ public class TestRestService {
 
     @Test
     public void testFeResponseToSchema() throws Exception {
-        String res = "{\"properties\":[{\"type\":\"TINYINT\",\"name\":\"k1\",\"comment\":\"\",\"aggregation_type\":\"\"},{\"name\":\"k5\","
-                + "\"scale\":\"0\",\"comment\":\"\",\"type\":\"DECIMALV2\",\"precision\":\"9\",\"aggregation_type\":\"\"}],\"status\":200}";
+        String res = "{\"properties\":[{\"type\":\"TINYINT\",\"name\":\"k1\",\"comment\":\"\"},{\"name\":\"k5\","
+                + "\"scale\":\"0\",\"comment\":\"\",\"type\":\"DECIMALV2\",\"precision\":\"9\"}],\"status\":200}";
         Schema expected = new Schema();
         expected.setStatus(200);
-        Field k1 = new Field("k1", "TINYINT", "", 0, 0, "");
-        Field k5 = new Field("k5", "DECIMALV2", "", 9, 0, "");
+        Field k1 = new Field("k1", "TINYINT", "", 0, 0);
+        Field k5 = new Field("k5", "DECIMALV2", "", 9, 0);
         expected.put(k1);
         expected.put(k5);
         Assert.assertEquals(expected, RestService.parseSchema(res, logger));
@@ -209,35 +210,79 @@ public class TestRestService {
         String res = "{\"partitions\":{"
                 + "\"11017\":{\"routings\":[\"be1\",\"be2\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1},"
                 + "\"11019\":{\"routings\":[\"be3\",\"be4\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1},"
-                + "\"11021\":{\"routings\":[\"be3\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1}},"
+                + "\"11021\":{\"routings\":[\"be3\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1},"
+                + "\"11023\":{\"routings\":[\"be2\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1},"
+                + "\"11122\":{\"routings\":[\"be1\", \"be3\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1},"
+                + "\"13422\":{\"routings\":[\"be3\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1}},"
                 + "\"opaqued_query_plan\":\"query_plan\",\"status\":200}";
-
+        /*[11017,11019,11021,11023,11122,13422]
+	      offset = 0
+          [11017,11019,11021]
+           offset = 3 
+          [11023,11122,13422]
+           offset = 6
+	*/
+	Settings settings = new PropertiesSettings();
+	settings.setProperty(DORIS_REQUEST_TABLET_BATCH,"3");
+        settings.setProperty(DORIS_REQUEST_TABLET_CURSOR_OFFSET, "0");
+	settings.setProperty(DORIS_REQUEST_TABLET_BATCH_FLAG, "true");
         QueryPlan queryPlan = RestService.getQueryPlan(res, logger);
 
         List<Long> be1Tablet = new ArrayList<>();
+        List<Long> be2Tablet = new ArrayList<>();
+	List<Long> be3Tablet = new ArrayList<>();
+	List<Long> be4Tablet = new ArrayList<>();
         be1Tablet.add(11017L);
-        List<Long> be3Tablet = new ArrayList<>();
-        be3Tablet.add(11019L);
+	be3Tablet.add(11019L);
         be3Tablet.add(11021L);
         Map<String, List<Long>> expected = new HashMap<>();
         expected.put("be1", be1Tablet);
         expected.put("be3", be3Tablet);
-
-        Assert.assertEquals(expected, RestService.selectBeForTablet(queryPlan, logger));
-
+	    //expected : {"be1": [11017L],"be3" : [11021L,11019L]};
+	    //be3=[11019, 11021, 13422], be2=[11023], be1=[11017, 11122]
+        Assert.assertEquals(expected, RestService.selectBeForTablet(settings,queryPlan, logger));
+	    System.out.println("Test------------------------1");
+        expected.clear();
+        be1Tablet.clear();
+	    be3Tablet.clear();
+	    be2Tablet.clear();
+	    settings.setProperty(DORIS_REQUEST_TABLET_CURSOR_OFFSET, "1");
+	    queryPlan = RestService.getQueryPlan(res, logger);
+        be2Tablet.add(11023L);
+	    be1Tablet.add(11122L);
+        be3Tablet.add(13422L);
+        expected.put("be2",be2Tablet);
+	    expected.put("be3",be3Tablet);
+	    expected.put("be1",be1Tablet);
+        //expected : {"be3": [113422L],"be2": [11023L] "be1": [11122L]}
+        Assert.assertEquals(expected, RestService.selectBeForTablet(settings, queryPlan, logger));
+	    System.out.println("Test------------------------2");
+	    expected.clear();
+	    be3Tablet.clear();
+	    be1Tablet.clear();
+        be2Tablet.clear();
+	    /*queryPlan = RestService.getQueryPlan(res, logger);
+	    settings.setProperty(DORIS_REQUEST_TABLET_CURSOR_OFFSET, "2");
+	    be3Tablet.add(11021L);
+	    be3Tablet.add(13422L);
+	    expected.put("be3", be3Tablet);
+	    //expected : {"be3": [11021L, 13422L]}
+	    Assert.assertEquals(expected, RestService.selectBeForTablet(settings, queryPlan, logger));
+	    System.out.println("Test------------------------3");*/
+	    settings.setProperty(DORIS_REQUEST_TABLET_CURSOR_OFFSET, "0");
         String noBeRes = "{\"partitions\":{"
                 + "\"11021\":{\"routings\":[],\"version\":3,\"versionHash\":1,\"schemaHash\":1}},"
                 + "\"opaqued_query_plan\":\"query_plan\",\"status\":200}";
         thrown.expect(DorisException.class);
         thrown.expectMessage(startsWith("Cannot choice Doris BE for tablet"));
-        RestService.selectBeForTablet(RestService.getQueryPlan(noBeRes, logger), logger);
+        RestService.selectBeForTablet(settings,RestService.getQueryPlan(noBeRes, logger), logger);
 
         String notNumberRes = "{\"partitions\":{"
                 + "\"11021xxx\":{\"routings\":[\"be1\"],\"version\":3,\"versionHash\":1,\"schemaHash\":1}},"
                 + "\"opaqued_query_plan\":\"query_plan\",\"status\":200}";
         thrown.expect(DorisException.class);
         thrown.expectMessage(startsWith("Parse tablet id "));
-        RestService.selectBeForTablet(RestService.getQueryPlan(noBeRes, logger), logger);
+        RestService.selectBeForTablet(settings, RestService.getQueryPlan(noBeRes, logger), logger);
     }
 
     @Test
@@ -295,32 +340,5 @@ public class TestRestService {
         Collections.sort(actual);
 
         Assert.assertEquals(expected, actual);
-    }
-
-    @Deprecated
-    @Ignore
-    public void testParseBackend() throws Exception {
-        String response = "{\"href_columns\":[\"BackendId\"],\"parent_url\":\"/rest/v1/system?path=/\"," +
-                "\"column_names\":[\"BackendId\",\"Cluster\",\"IP\",\"HostName\",\"HeartbeatPort\",\"BePort\"," +
-                "\"HttpPort\",\"BrpcPort\",\"LastStartTime\",\"LastHeartbeat\",\"Alive\",\"SystemDecommissioned\"," +
-                "\"ClusterDecommissioned\",\"TabletNum\",\"DataUsedCapacity\",\"AvailCapacity\",\"TotalCapacity\"," +
-                "\"UsedPct\",\"MaxDiskUsedPct\",\"Tag\",\"ErrMsg\",\"Version\",\"Status\"],\"rows\":[{\"HttpPort\":" +
-                "\"8040\",\"Status\":\"{\\\"lastSuccessReportTabletsTime\\\":\\\"N/A\\\",\\\"lastStreamLoadTime\\\":" +
-                "-1}\",\"SystemDecommissioned\":\"false\",\"LastHeartbeat\":\"\\\\N\",\"DataUsedCapacity\":\"0.000 " +
-                "\",\"ErrMsg\":\"\",\"IP\":\"127.0.0.1\",\"UsedPct\":\"0.00 %\",\"__hrefPaths\":[\"/rest/v1/system?" +
-                "path=//backends/10002\"],\"Cluster\":\"default_cluster\",\"Alive\":\"true\",\"MaxDiskUsedPct\":" +
-                "\"0.00 %\",\"BrpcPort\":\"-1\",\"BePort\":\"-1\",\"ClusterDecommissioned\":\"false\"," +
-                "\"AvailCapacity\":\"1.000 B\",\"Version\":\"\",\"BackendId\":\"10002\",\"HeartbeatPort\":\"9050\"," +
-                "\"LastStartTime\":\"\\\\N\",\"TabletNum\":\"0\",\"TotalCapacity\":\"0.000 \",\"Tag\":" +
-                "\"{\\\"location\\\" : \\\"default\\\"}\",\"HostName\":\"localhost\"}]}";
-        List<BackendRow> backendRows = RestService.parseBackend(response, logger);
-        Assert.assertTrue(backendRows != null && !backendRows.isEmpty());
-    }
-
-    @Test
-    public void testParseBackendV2() throws Exception {
-        String response = "{\"backends\":[{\"ip\":\"192.168.1.1\",\"http_port\":8042,\"is_alive\":true}, {\"ip\":\"192.168.1.2\",\"http_port\":8042,\"is_alive\":true}]}";
-        List<BackendV2.BackendRowV2> backendRows = RestService.parseBackendV2(response, logger);
-        Assert.assertEquals(2, backendRows.size());
     }
 }

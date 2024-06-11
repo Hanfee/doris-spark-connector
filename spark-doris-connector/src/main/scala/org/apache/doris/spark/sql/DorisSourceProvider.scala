@@ -19,34 +19,26 @@ package org.apache.doris.spark.sql
 
 import org.apache.doris.spark.DorisStreamLoad
 import org.apache.doris.spark.cfg.{ConfigurationOptions, SparkSettings}
-import org.apache.doris.spark.sql.DorisSourceProvider.SHORT_NAME
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.execution.streaming.Sink
-import org.apache.spark.sql.sources._
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.sources.v2.writer.streaming.StreamWriter
+import org.apache.spark.sql.sources.v2.{DataSourceOptions, StreamWriteSupport}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, SQLContext, SaveMode}
-import org.slf4j.{Logger, LoggerFactory}
+import org.apache.spark.sql.sources.{BaseRelation, CreatableRelationProvider, DataSourceRegister, Filter, RelationProvider}
+
 import java.io.IOException
 import java.util
-
-import org.apache.doris.spark.rest.RestService
-
+import scala.collection.JavaConversions.mapAsScalaMap
 import scala.collection.JavaConverters.mapAsJavaMapConverter
 import scala.util.control.Breaks
 
-private[sql] class DorisSourceProvider extends DataSourceRegister
-  with RelationProvider
-  with CreatableRelationProvider
-  with StreamSinkProvider
-  with Serializable {
-
-  private val logger: Logger = LoggerFactory.getLogger(classOf[DorisSourceProvider].getName)
-
-  override def shortName(): String = SHORT_NAME
+private[sql] class DorisSourceProvider extends DataSourceRegister with RelationProvider with CreatableRelationProvider with StreamWriteSupport with Logging {
+  override def shortName(): String = "doris"
 
   override def createRelation(sqlContext: SQLContext, parameters: Map[String, String]): BaseRelation = {
-    new DorisRelation(sqlContext, Utils.params(parameters, logger))
+    new DorisRelation(sqlContext, Utils.params(parameters, log))
   }
 
 
@@ -58,12 +50,12 @@ private[sql] class DorisSourceProvider extends DataSourceRegister
                               data: DataFrame): BaseRelation = {
 
     val sparkSettings = new SparkSettings(sqlContext.sparkContext.getConf)
-    sparkSettings.merge(Utils.params(parameters, logger).asJava)
+    sparkSettings.merge(Utils.params(parameters, log).asJava)
     // init stream loader
-    val dorisStreamLoader = new DorisStreamLoad(sparkSettings, data.columns)
+    val dorisStreamLoader = new DorisStreamLoad(sparkSettings)
 
-    val maxRowCount = sparkSettings.getIntegerProperty(ConfigurationOptions.DORIS_SINK_BATCH_SIZE, ConfigurationOptions.SINK_BATCH_SIZE_DEFAULT)
-    val maxRetryTimes = sparkSettings.getIntegerProperty(ConfigurationOptions.DORIS_SINK_MAX_RETRIES, ConfigurationOptions.SINK_MAX_RETRIES_DEFAULT)
+    val maxRowCount = sparkSettings.getIntegerProperty(ConfigurationOptions.DORIS_BATCH_SIZE, ConfigurationOptions.DORIS_BATCH_SIZE_DEFAULT)
+    val maxRetryTimes = sparkSettings.getIntegerProperty(ConfigurationOptions.DORIS_REQUEST_RETRIES, ConfigurationOptions.DORIS_REQUEST_RETRIES_DEFAULT)
 
     data.rdd.foreachPartition(partition => {
       val rowsBuffer: util.List[util.List[Object]] = new util.ArrayList[util.List[Object]](maxRowCount)
@@ -93,29 +85,22 @@ private[sql] class DorisSourceProvider extends DataSourceRegister
 
           for (i <- 1 to maxRetryTimes) {
             try {
-              dorisStreamLoader.loadV2(rowsBuffer)
+              dorisStreamLoader.load(rowsBuffer)
               rowsBuffer.clear()
               loop.break()
             }
             catch {
               case e: Exception =>
                 try {
-                  logger.debug("Failed to load data on BE: {} node ", dorisStreamLoader.getLoadUrlStr)
-                  //If the current BE node fails to execute Stream Load, randomly switch to other BE nodes and try again
-                  dorisStreamLoader.setHostPort(RestService.randomBackendV2(sparkSettings, logger))
                   Thread.sleep(1000 * i)
+                  dorisStreamLoader.load(rowsBuffer)
+                  rowsBuffer.clear()
                 } catch {
                   case ex: InterruptedException =>
-                    logger.warn("Data that failed to load : " + dorisStreamLoader.listToString(rowsBuffer))
                     Thread.currentThread.interrupt()
                     throw new IOException("unable to flush; interrupted while doing another attempt", e)
                 }
             }
-          }
-
-          if (!rowsBuffer.isEmpty) {
-            logger.warn("Data that failed to load : " + dorisStreamLoader.listToString(rowsBuffer))
-            throw new IOException(s"Failed to load data on BE: ${dorisStreamLoader.getLoadUrlStr} node and exceeded the max retry times.")
           }
         }
 
@@ -138,13 +123,9 @@ private[sql] class DorisSourceProvider extends DataSourceRegister
     }
   }
 
-  override def createSink(sqlContext: SQLContext, parameters: Map[String, String], partitionColumns: Seq[String], outputMode: OutputMode): Sink = {
+  override def createStreamWriter(queryId: String, structType: StructType, outputMode: OutputMode, dataSourceOptions: DataSourceOptions): StreamWriter = {
     val sparkSettings = new SparkSettings(new SparkConf())
-    sparkSettings.merge(Utils.params(parameters, logger).asJava)
-    new DorisStreamLoadSink(sqlContext, sparkSettings)
+    sparkSettings.merge(Utils.params(dataSourceOptions.asMap().toMap, log).asJava)
+    new DorisStreamWriter(sparkSettings)
   }
-}
-
-object DorisSourceProvider {
-  val SHORT_NAME: String = "doris"
 }
