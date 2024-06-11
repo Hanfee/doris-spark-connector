@@ -30,7 +30,12 @@ import static org.apache.doris.spark.util.ErrorMessages.CONNECT_FAILED_MESSAGE;
 import static org.apache.doris.spark.util.ErrorMessages.ILLEGAL_ARGUMENT_MESSAGE;
 import static org.apache.doris.spark.util.ErrorMessages.PARSE_NUMBER_FAILED_MESSAGE;
 import static org.apache.doris.spark.util.ErrorMessages.SHOULD_NOT_HAPPEN_MESSAGE;
-
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH_DEFAULT;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_CURSOR_OFFSET;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_CURSOR_OFFSET_DEFAULT;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH_FLAG;
+import static org.apache.doris.spark.cfg.ConfigurationOptions.DORIS_REQUEST_TABLET_BATCH_FLAG_DEFAULT;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,9 +56,6 @@ import java.util.Set;
 import java.util.HashSet;
 import java.util.stream.Collectors;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.JsonMappingException;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.doris.spark.cfg.ConfigurationOptions;
@@ -65,7 +67,6 @@ import org.apache.doris.spark.exception.IllegalArgumentException;
 import org.apache.doris.spark.exception.ShouldNeverHappenException;
 import org.apache.doris.spark.rest.models.Backend;
 import org.apache.doris.spark.rest.models.BackendRow;
-import org.apache.doris.spark.rest.models.BackendV2;
 import org.apache.doris.spark.rest.models.QueryPlan;
 import org.apache.doris.spark.rest.models.Schema;
 import org.apache.doris.spark.rest.models.Tablet;
@@ -75,6 +76,9 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpRequestBase;
 import org.apache.http.entity.StringEntity;
+import org.codehaus.jackson.JsonParseException;
+import org.codehaus.jackson.map.JsonMappingException;
+import org.codehaus.jackson.map.ObjectMapper;
 import org.slf4j.Logger;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -87,9 +91,8 @@ public class RestService implements Serializable {
     private static final String API_PREFIX = "/api";
     private static final String SCHEMA = "_schema";
     private static final String QUERY_PLAN = "_query_plan";
-    @Deprecated
     private static final String BACKENDS = "/rest/v1/system?path=//backends";
-    private static final String BACKENDS_V2 = "/api/backends?is_alive=true";
+
 
     /**
      * send request to Doris FE and get response json string.
@@ -174,16 +177,16 @@ public class RestService implements Serializable {
                     connection.getURL(), connection.getResponseCode());
             throw new IOException("Failed to get response from Doris");
         }
-        StringBuilder result = new StringBuilder("");
+        String result = "";
         BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream(), "utf-8"));
         String line;
         while ((line = in.readLine()) != null) {
-            result.append(line);
+            result += line;
         }
         if (in != null) {
             in.close();
         }
-        return result.toString();
+        return result;
     }
 
     private static String getConnectionPost(HttpRequestBase request,String user, String passwd,Logger logger) throws IOException {
@@ -348,7 +351,7 @@ public class RestService implements Serializable {
         String resStr = send(cfg, httpPost, logger);
         logger.debug("Find partition response is '{}'.", resStr);
         QueryPlan queryPlan = getQueryPlan(resStr, logger);
-        Map<String, List<Long>> be2Tablets = selectBeForTablet(queryPlan, logger);
+        Map<String, List<Long>> be2Tablets = selectBeForTablet(cfg, queryPlan, logger);
         return tabletsMapToPartition(
                 cfg,
                 be2Tablets,
@@ -399,6 +402,30 @@ public class RestService implements Serializable {
         return queryPlan;
     }
 
+    @VisibleForTesting
+    static public Map<String,Boolean> selectTabletForStepInPartitions(Settings cfg, QueryPlan queryPlan, Logger logger) throws DorisException{
+        int batch = cfg.getIntegerProperty(DORIS_REQUEST_TABLET_BATCH,DORIS_REQUEST_TABLET_BATCH_DEFAULT);
+        int cursor_offset = cfg.getIntegerProperty(DORIS_REQUEST_TABLET_CURSOR_OFFSET,DORIS_REQUEST_TABLET_CURSOR_OFFSET_DEFAULT);
+        Map<String,Boolean> tabletsView = new HashMap();
+        List<String> tempTablets = new ArrayList<>();
+        queryPlan.getPartitions().forEach((k,v)->{
+       	     tempTablets.add(k);
+        });
+        if (tempTablets.isEmpty()) {
+            String errMsg = "QueryPlan getPartiions is empty";
+            logger.error(errMsg);
+            throw new DorisException(errMsg);
+        } else {
+            Collections.sort(tempTablets);
+            logger.debug("All tablets:{}", tempTablets.toString());
+            for(int i = (cursor_offset * batch); i <  tempTablets.size() && i < (cursor_offset + 1) * batch; ++i) {
+                tabletsView.put(tempTablets.get(i), Boolean.TRUE);
+            }
+        }
+        logger.debug("TablesView:{}", tabletsView.keySet().toString());
+        logger.debug("--------------------------------------------");
+        return tabletsView;
+    }
     /**
      * select which Doris BE to get tablet data.
      * @param queryPlan {@link QueryPlan} translated from Doris FE response
@@ -407,15 +434,29 @@ public class RestService implements Serializable {
      * @throws DorisException throw when select failed.
      */
     @VisibleForTesting
-    static  Map<String, List<Long>> selectBeForTablet(QueryPlan queryPlan, Logger logger) throws DorisException {
+    static  Map<String, List<Long>> selectBeForTablet(Settings cfg, QueryPlan queryPlan, Logger logger) throws DorisException {
         Map<String, List<Long>> be2Tablets = new HashMap<>();
+	Map<String,Boolean> filteredTablets = new HashMap<>();
+        filteredTablets = selectTabletForStepInPartitions(cfg,queryPlan,logger);
+	boolean flag = false;
+	try{
+	    flag = Boolean.parseBoolean(cfg.getProperty(DORIS_REQUEST_TABLET_BATCH_FLAG,new Boolean(DORIS_REQUEST_TABLET_BATCH_FLAG_DEFAULT).toString()));
+	} catch(NumberFormatException e) {
+	    String errMsg = "Parse doris request tablet batch flag failed.";
+	    logger.error(errMsg, e);
+	    throw new DorisException(errMsg, e);
+	}
         for (Map.Entry<String, Tablet> part : queryPlan.getPartitions().entrySet()) {
+	    String tabletKey = part.getKey();
+            if (flag && !filteredTablets.containsKey(tabletKey)) {
+                continue;
+            }
             logger.debug("Parse tablet info: '{}'.", part);
             long tabletId;
             try {
-                tabletId = Long.parseLong(part.getKey());
+                tabletId = Long.parseLong(tabletKey);
             } catch (NumberFormatException e) {
-                String errMsg = "Parse tablet id '" + part.getKey() + "' to long failed.";
+                String errMsg = "Parse tablet id '" + tabletKey + "' to long failed.";
                 logger.error(errMsg, e);
                 throw new DorisException(errMsg, e);
             }
@@ -480,17 +521,15 @@ public class RestService implements Serializable {
      * @param logger slf4j logger
      * @return the chosen one Doris BE node
      * @throws IllegalArgumentException BE nodes is illegal
-     * Deprecated, use randomBackendV2 instead
      */
-    @Deprecated
     @VisibleForTesting
     public static String randomBackend(SparkSettings sparkSettings , Logger logger) throws DorisException, IOException {
         String feNodes = sparkSettings.getProperty(DORIS_FENODES);
         String feNode = randomEndpoint(feNodes, logger);
-        String beUrl =   String.format("http://%s" + BACKENDS, feNode);
+        String beUrl =   String.format("http://%s" + BACKENDS,feNode);
         HttpGet httpGet = new HttpGet(beUrl);
-        String response = send(sparkSettings, httpGet, logger);
-        logger.info("Backend Info:{}", response);
+        String response = send(sparkSettings,httpGet, logger);
+        logger.info("Backend Info:{}",response);
         List<BackendRow> backends = parseBackend(response, logger);
         logger.trace("Parse beNodes '{}'.", backends);
         if (backends == null || backends.isEmpty()) {
@@ -502,15 +541,8 @@ public class RestService implements Serializable {
         return backend.getIP() + ":" + backend.getHttpPort();
     }
 
-    /**
-     * translate Doris FE response to inner {@link BackendRow} struct.
-     * @param response Doris FE response
-     * @param logger {@link Logger}
-     * @return inner {@link List<BackendRow>} struct
-     * @throws DorisException,IOException throw when translate failed
-     * */
-    @Deprecated
-    @VisibleForTesting
+
+
     static List<BackendRow> parseBackend(String response, Logger logger) throws DorisException, IOException {
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
         Backend backend;
@@ -535,59 +567,6 @@ public class RestService implements Serializable {
             throw new ShouldNeverHappenException();
         }
         List<BackendRow> backendRows = backend.getRows().stream().filter(v -> v.getAlive()).collect(Collectors.toList());
-        logger.debug("Parsing schema result is '{}'.", backendRows);
-        return backendRows;
-    }
-
-    /**
-     * choice a Doris BE node to request.
-     * @param logger slf4j logger
-     * @return the chosen one Doris BE node
-     * @throws IllegalArgumentException BE nodes is illegal
-     */
-    @VisibleForTesting
-    public static String randomBackendV2(SparkSettings sparkSettings, Logger logger) throws DorisException {
-        String feNodes = sparkSettings.getProperty(DORIS_FENODES);
-        String feNode = randomEndpoint(feNodes, logger);
-        String beUrl =   String.format("http://%s" + BACKENDS_V2, feNode);
-        HttpGet httpGet = new HttpGet(beUrl);
-        String response = send(sparkSettings, httpGet, logger);
-        logger.info("Backend Info:{}", response);
-        List<BackendV2.BackendRowV2> backends = parseBackendV2(response, logger);
-        logger.trace("Parse beNodes '{}'.", backends);
-        if (backends == null || backends.isEmpty()) {
-            logger.error(ILLEGAL_ARGUMENT_MESSAGE, "beNodes", backends);
-            throw new IllegalArgumentException("beNodes", String.valueOf(backends));
-        }
-        Collections.shuffle(backends);
-        BackendV2.BackendRowV2 backend = backends.get(0);
-        return backend.getIp() + ":" + backend.getHttpPort();
-    }
-
-    static List<BackendV2.BackendRowV2> parseBackendV2(String response, Logger logger) throws DorisException {
-        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-        BackendV2 backend;
-        try {
-            backend = mapper.readValue(response, BackendV2.class);
-        } catch (com.fasterxml.jackson.core.JsonParseException e) {
-            String errMsg = "Doris BE's response is not a json. res: " + response;
-            logger.error(errMsg, e);
-            throw new DorisException(errMsg, e);
-        } catch (com.fasterxml.jackson.databind.JsonMappingException e) {
-            String errMsg = "Doris BE's response cannot map to schema. res: " + response;
-            logger.error(errMsg, e);
-            throw new DorisException(errMsg, e);
-        } catch (IOException e) {
-            String errMsg = "Parse Doris BE's response to json failed. res: " + response;
-            logger.error(errMsg, e);
-            throw new DorisException(errMsg, e);
-        }
-
-        if (backend == null) {
-            logger.error(SHOULD_NOT_HAPPEN_MESSAGE);
-            throw new ShouldNeverHappenException();
-        }
-        List<BackendV2.BackendRowV2> backendRows = backend.getBackends();
         logger.debug("Parsing schema result is '{}'.", backendRows);
         return backendRows;
     }

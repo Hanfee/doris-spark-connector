@@ -27,7 +27,7 @@ import org.slf4j.LoggerFactory;
  * present an Doris BE address.
  */
 public class Routing {
-    private final static Logger logger = LoggerFactory.getLogger(Routing.class);
+    private static Logger logger = LoggerFactory.getLogger(Routing.class);
 
     private String host;
     private int port;

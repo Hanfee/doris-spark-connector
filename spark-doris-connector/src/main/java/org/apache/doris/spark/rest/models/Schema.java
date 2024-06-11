@@ -23,7 +23,6 @@ import java.util.Objects;
 
 public class Schema {
     private int status = 0;
-    private String keysType;
     private List<Field> properties;
 
     public Schema() {
@@ -42,14 +41,6 @@ public class Schema {
         this.status = status;
     }
 
-    public String getKeysType() {
-        return keysType;
-    }
-
-    public void setKeysType(String keysType) {
-        this.keysType = keysType;
-    }
-
     public List<Field> getProperties() {
         return properties;
     }
@@ -58,8 +49,8 @@ public class Schema {
         this.properties = properties;
     }
 
-    public void put(String name, String type, String comment, int scale, int precision, String aggregation_type) {
-        properties.add(new Field(name, type, comment, scale, precision, aggregation_type));
+    public void put(String name, String type, String comment, int scale, int precision) {
+        properties.add(new Field(name, type, comment, scale, precision));
     }
 
     public void put(Field f) {
@@ -99,7 +90,6 @@ public class Schema {
     public String toString() {
         return "Schema{" +
                 "status=" + status +
-                ", keysType='" + keysType +
                 ", properties=" + properties +
                 '}';
     }

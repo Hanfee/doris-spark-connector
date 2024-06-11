@@ -63,14 +63,10 @@ public interface ConfigurationOptions {
 
     String DORIS_DESERIALIZE_QUEUE_SIZE = "doris.deserialize.queue.size";
     int DORIS_DESERIALIZE_QUEUE_SIZE_DEFAULT = 64;
-
-    String DORIS_WRITE_FIELDS = "doris.write.fields";
-
-    String DORIS_SINK_BATCH_SIZE = "doris.sink.batch.size";
-    int SINK_BATCH_SIZE_DEFAULT = 10000;
-
-    String DORIS_SINK_MAX_RETRIES = "doris.sink.max-retries";
-    int SINK_MAX_RETRIES_DEFAULT = 1;
-
-    String DORIS_MAX_FILTER_RATIO = "doris.max.filter.ratio";
+    String DORIS_REQUEST_TABLET_BATCH  = "doris.request.tablet.batch";
+    int DORIS_REQUEST_TABLET_BATCH_DEFAULT = 10;
+    String DORIS_REQUEST_TABLET_CURSOR_OFFSET = "doris.request.tablet.cursor.offset";
+    int DORIS_REQUEST_TABLET_CURSOR_OFFSET_DEFAULT = 0;
+    String DORIS_REQUEST_TABLET_BATCH_FLAG = "doris.request.tablet.batch.flag";
+    boolean DORIS_REQUEST_TABLET_BATCH_FLAG_DEFAULT = false;
 }

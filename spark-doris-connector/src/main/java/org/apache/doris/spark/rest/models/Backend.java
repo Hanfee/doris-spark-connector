@@ -23,7 +23,6 @@ import java.util.List;
 /**
  * Be response model
  **/
-@Deprecated
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Backend {
 

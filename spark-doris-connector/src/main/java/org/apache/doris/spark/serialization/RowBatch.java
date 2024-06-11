@@ -256,7 +256,6 @@ public class RowBatch {
                     case "LARGEINT":
                     case "CHAR":
                     case "VARCHAR":
-                    case "STRING":
                         Preconditions.checkArgument(mt.equals(Types.MinorType.VARCHAR),
                                 typeMismatchMessage(currentType, mt));
                         VarCharVector varCharVector = (VarCharVector) curFieldVector;
